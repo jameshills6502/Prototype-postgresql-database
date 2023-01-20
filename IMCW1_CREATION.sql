@@ -1,5 +1,4 @@
 DROP TABLE IF EXISTS customer CASCADE;
-DROP TABLE IF EXISTS account_type CASCADE;
 DROP TABLE IF EXISTS accounts CASCADE;
 DROP TABLE IF EXISTS loans CASCADE;
 DROP TABLE IF EXISTS employee_rank CASCADE;
@@ -7,6 +6,15 @@ DROP TABLE IF EXISTS employee CASCADE;
 DROP TABLE IF EXISTS payees CASCADE;
 DROP TABLE IF EXISTS transfer CASCADE;
 DROP TABLE IF EXISTS payments CASCADE;
+DROP ROLE IF EXISTS customer;
+DROP ROLE IF EXISTS manager;
+DROP ROLE IF EXISTS employee;
+
+
+
+
+
+
 
 CREATE TABLE "customer" (
   "Customer_ID" Serial,
@@ -20,26 +28,16 @@ CREATE TABLE "customer" (
   PRIMARY KEY ("Customer_ID")
 );
 
-CREATE TABLE "account_type" (
-  "Account_Type_ID" Serial,
-  "Account_Type" Varchar(255) ,
-  PRIMARY KEY ("Account_Type_ID")
-);
 
 CREATE TABLE "accounts" (
   "Account_ID" Serial,
   "Customer_ID" Integer,
-  "Account_Type_ID" Integer,
-  "Account_Balance" Money,
+  "Account_Type" varchar(30),
   "Date_Created" timestamp without time zone,
-  "Account_Credit" Money,
   PRIMARY KEY ("Account_ID"),
   CONSTRAINT "FK_accounts.Customer_ID"
     FOREIGN KEY ("Customer_ID")
-      REFERENCES "customer"("Customer_ID"),
-  CONSTRAINT "FK_accounts.Account_Type_ID"
-    FOREIGN KEY ("Account_Type_ID")
-      REFERENCES "account_type"("Account_Type_ID")
+      REFERENCES "customer"("Customer_ID")
 );
 
 CREATE TABLE "employee_rank" (
@@ -80,9 +78,6 @@ CREATE TABLE "loans" (
     FOREIGN KEY ("Employee_ID")
       REFERENCES "employee"("Employee_ID")
 );
-
-
-
 
 CREATE TABLE "payees" (
   "Payee_ID" Serial,
@@ -128,7 +123,13 @@ grant pg_read_all_data to manager;
 grant pg_write_all_data to manager;
 create role employee;
 create role customer;
-grant select on 
+grant select on table customer to customer;
+ALTER TABLE customer ENABLE ROW LEVEL SECURITY;
+CREATE POLICY secure ON customer TO customer USING("Customer_Username" = (select current_user));
+
+
+
+
 -- MAYBE USE SCHEMAs INSTEAD OF GROUP ROLES
 -- AS THESE CAN BE USED MUCH QUICKER
 
@@ -138,8 +139,9 @@ as
 $$
 declare
 begin
-    create role username with login password '1234';
-    grant role customer to username;
+    execute 'create role "'||username||'"with login password ''1234'';
+    grant customer to "'||username||'";
+    set role to "'||username||'";';
 end;
 $$;
 
@@ -166,30 +168,32 @@ begin
 end;
 $$;
 
-
-create or replace procedure account_application(Customer_ID Integer, requested_account_type varchar(255), initial_amount_entered Money)
+create or replace procedure account_application(requested_account_type varchar(255))
 language plpgsql
 as
 $$
 declare
+    date_of_creation timestamp without time zone;
+    current_id Integer;
 begin
-
+    date_of_creation := (select localtimestamp(0));
+    current_id := (select "Customer_ID" from customer where current_user = "Customer_Username");
+    insert into accounts("Customer_ID", "Account_Type", "Date_Created") values(current_id, requested_account_type, date_of_creation);
 end;
 $$;
-
-
 
 create or replace procedure customer_balance_transfer(value1 Integer, value2 Integer, value3 Money)
 language plpgsql
 as
 $$
+declare 
 begin
     update accounts
-    set Account_Balance = Account_Balance - Amount_Sent
+    set Account_Balance = Account_Balance - value3
     where Account_ID = value2;
 
     update accounts
-    set Account_Balance = Account_Balance + Amount_Sent
+    set Account_Balance = Account_Balance + value3
     where Account_ID = value1;
 
     commit;
