@@ -1,16 +1,16 @@
 DROP TABLE IF EXISTS customer CASCADE;
-DROP TABLE IF EXISTS accounts CASCADE;
 DROP TABLE IF EXISTS loans CASCADE;
 DROP TABLE IF EXISTS employee_rank CASCADE;
 DROP TABLE IF EXISTS employee CASCADE;
 DROP TABLE IF EXISTS payees CASCADE;
 DROP TABLE IF EXISTS transfer CASCADE;
 DROP TABLE IF EXISTS payments CASCADE;
+drop table if exists cards cascade;
+drop table if exists alter_request cascade;
 drop table if exists debit_account cascade;
 drop table if exists credit_account cascade;
-DROP ROLE IF EXISTS customer;
-DROP ROLE IF EXISTS manager;
-DROP ROLE IF EXISTS employee;
+
+create extension if not exists pgcrypto;
 
 CREATE TABLE "customer" (
   "Customer_ID" Serial,
@@ -25,39 +25,21 @@ CREATE TABLE "customer" (
 );
 
 CREATE TABLE "credit_account" (
-  "Account_ID" Integer,
-  "Customer_ID" Integer,
-  "Credit_Outstanding" Money,
+  "Account_ID" Serial,
+  "Credit_Limit" Money,
+  "Credit_Outstanding" Money check ("Credit_Outstanding" <= "Credit_Limit"),
   "Date_Created" timestamp without time zone,
   "Payment_Interval_In_Days" Integer,
-  PRIMARY KEY ("Account_ID"),
-  CONSTRAINT "FK_credit_account.Customer_ID"
-    FOREIGN KEY ("Customer_ID")
-      REFERENCES "customer"("Customer_ID")
+  PRIMARY KEY ("Account_ID")
 );
 
 CREATE TABLE "debit_account" (
   "Account_ID" Serial,
-  "Customer_ID" Integer,
-  "Date_Created" timestamp without time zone,
-  "Balance" Money,
+  "Sort_Code" varchar(8),
+  "Balance" Money check ("Balance" >= '£0.00' - "Overdraft"),
   "Overdraft" Money,
-  PRIMARY KEY ("Account_ID"),
-  CONSTRAINT "FK_debit_account.Customer_ID"
-    FOREIGN KEY ("Customer_ID")
-      REFERENCES "customer"("Customer_ID")
-);
-
-
-CREATE TABLE "accounts" (
-  "Account_ID" Serial,
-  "Customer_ID" Integer,
-  "Account_Type" varchar(30),
   "Date_Created" timestamp without time zone,
-  PRIMARY KEY ("Account_ID"),
-  CONSTRAINT "FK_accounts.Customer_ID"
-    FOREIGN KEY ("Customer_ID")
-      REFERENCES "customer"("Customer_ID")
+  PRIMARY KEY ("Account_ID")
 );
 
 CREATE TABLE "employee_rank" (
@@ -83,17 +65,35 @@ CREATE TABLE "employee" (
       REFERENCES "employee_rank"("Employee_Rank_ID")
 );
 
+CREATE TABLE "cards" (
+  "Card_ID" Serial,
+  "Customer_ID" Integer,
+  "Debit_ID" Integer,
+  "Credit_ID" Integer,
+  "Card_Type" Varchar(10),
+  PRIMARY KEY ("Card_ID"),
+  CONSTRAINT "FK_Cards.Customer_ID"
+    FOREIGN KEY ("Customer_ID")
+      REFERENCES "customer"("Customer_ID"),
+  CONSTRAINT "FK_Cards.Debit_ID"
+    FOREIGN KEY ("Debit_ID")
+      REFERENCES "debit_account"("Account_ID"),
+  CONSTRAINT "FK_Cards.Credit_ID"
+    FOREIGN KEY ("Credit_ID")
+      REFERENCES "credit_account"("Account_ID")
+);
+
 CREATE TABLE "loans" (
   "Loan_ID" Serial,
-  "Account_ID" Integer,
+  "Card_ID" Integer,
   "Employee_ID" Integer,
   "Loan_Status" Varchar(200),
   "Loan_Amount" Money,
   "Date_Of_Request" timestamp without time zone,
   PRIMARY KEY ("Loan_ID"),
-  CONSTRAINT "FK_loans.Account_ID"
-    FOREIGN KEY ("Account_ID")
-      REFERENCES "accounts"("Account_ID"),
+  CONSTRAINT "FK_loans.Card_ID"
+    FOREIGN KEY ("Card_ID")
+      REFERENCES "cards"("Card_ID"),
   CONSTRAINT "FK_employee.Employee_ID"
     FOREIGN KEY ("Employee_ID")
       REFERENCES "employee"("Employee_ID")
@@ -103,7 +103,7 @@ CREATE TABLE "payees" (
   "Payee_ID" Serial,
   "Customer_ID" Integer,
   "Payee_Account_ID" Integer,
-  "Payee_Sort_Code" Integer,
+  "Payee_Sort_Code" varchar(8),
   "Payee_Description" Varchar(255),
   PRIMARY KEY ("Payee_ID"),
   CONSTRAINT "FK_payees.Customer_ID"
@@ -114,16 +114,16 @@ CREATE TABLE "payees" (
 CREATE TABLE "transfer" (
   "Transaction_ID" Serial,
   "Payee_ID" Integer,
-  "Account_ID" Integer,
+  "Card_ID" Integer,
   "Amount_Sent" Money,
   "Date_Sent" timestamp without time zone,
   PRIMARY KEY ("Transaction_ID"),
   CONSTRAINT "FK_transfer.Payee_ID"
     FOREIGN KEY ("Payee_ID")
       REFERENCES "payees"("Payee_ID"),
-  CONSTRAINT "FK_transfer.Account_ID"
-    FOREIGN KEY ("Account_ID")
-      REFERENCES "accounts"("Account_ID")
+  CONSTRAINT "FK_transfer.Card_ID"
+    FOREIGN KEY ("Card_ID")
+      REFERENCES "cards"("Card_ID")
 );
 
 CREATE TABLE "payments" (
@@ -137,55 +137,145 @@ CREATE TABLE "payments" (
       REFERENCES "loans"("Loan_ID")
 );
 
+CREATE TABLE "alter_request" (
+  "Request_ID" Serial,
+  "Card_ID" Integer,
+  "Account_Type" Varchar(8),
+  "Request_Type" Varchar(20),
+  "Altered_By" Money,
+  "Request_Status" Varchar(20),
+  "Approved_by_employee" Integer,
+  "Date_Of_Request" Timestamp without time zone,
+  PRIMARY KEY ("Request_ID"),
+  CONSTRAINT "FK_alter_request.Card_ID"
+    FOREIGN KEY ("Card_ID")
+      REFERENCES "cards"("Card_ID"),
+  CONSTRAINT "FK_alter_request.Approved_by_employee"
+    FOREIGN KEY ("Approved_by_employee")
+      REFERENCES "employee"("Employee_ID")
+);
+
 insert into employee_rank("Rank_Name", "Rank_Description", "Rank_Privileges") values(
   'Employee', 'Basic Employee', 'Able to: read all tables'),
   ('Manager', 'Higher Up Employee', 'Able to: read, write all tables');
 
+---------------------------------------
+---------------------------------------
 
-create schema if not exists bank;
+
 create role manager;
 grant connect on database imcw to manager;
-grant postgres to manager;
 create role employee;
 create role customer;
 grant select on table customer to customer;
-ALTER TABLE customer ENABLE ROW LEVEL SECURITY;
-CREATE POLICY secure ON customer TO customer USING("Customer_Username" = (select current_user));
--- MAYBE USE SCHEMAs INSTEAD OF GROUP ROLES
--- AS THESE CAN BE USED MUCH QUICKER
+grant select on table debit_account to customer;
+grant select on table credit_account to customer;
+grant select on table loans to customer;
+grant select on table payees to customer;
+grant select on table cards to customer;
+grant select on table transfer to customer;
+grant select on table alter_request to customer;
+grant select on table payments to customer;
 
-create or replace procedure customer_role_creation(username varchar(255))
-language plpgsql
+grant select on table customer to employee;
+grant select on table debit_account to employee;
+grant select on table credit_account to employee;
+grant select on table loans to employee;
+grant select on table payees to employee;
+grant select on table cards to employee;
+grant select on table transfer to employee;
+grant select on table alter_request to employee;
+grant select on table payments to employee;
+grant select on table employee to employee;
+
+grant select on table customer to manager;
+grant select on table debit_account to manager;
+grant select on table credit_account to manager;
+grant select on table loans to manager;
+grant select on table payees to manager;
+grant select on table cards to manager;
+grant select on table transfer to manager;
+grant select on table alter_request to manager;
+grant select on table payments to manager;
+grant select on table employee to manager;
+
+
+alter table customer enable row level security;
+alter table cards enable row level security;
+alter table credit_account enable row level security;
+alter table debit_account enable row level security;
+alter table alter_request enable row level security;
+alter table loans enable row level security;
+alter table transfer enable row level security;
+alter table payees enable row level security;
+alter table payments enable row level security;
+
+-- TO DO --
+-- . Create Views and Policies for Manager and Employee
+-- . 
+
+CREATE POLICY secure ON customer TO customer USING("Customer_Username" = (select current_user));
+CREATE POLICY secure ON cards TO customer USING((select "Customer_ID" from customer where ("Customer_Username" = (select current_user))) = "Customer_ID");
+CREATE POLICY secure ON credit_account TO customer USING("Account_ID" = (select "Credit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure ON debit_account TO customer USING("Account_ID" = (select "Debit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure on alter_request TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure on loans TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure on transfer TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure on payees TO customer USING("Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user))));
+CREATE POLICY secure ON payments TO customer USING("Loan_ID" = (select "Loan_ID" from loans where "Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user))))));
+
+
+
+
+
+------------------------------
+------------------------------
+
+create or replace procedure customer_role_creation(username varchar(255), password_ varchar(255))
+language plpgsql 
+SECURITY definer
 as
 $$
 declare
 begin
-    execute 'create role "'||username||'"with login password ''1234'';
+    execute 'create role "'||username||'" with login password "'||password_||'";
     grant customer to "'||username||'"';
 end;
 $$;
 
 create or replace procedure account_creation(username varchar(255), requested_account_type varchar(255))
 language plpgsql
+SECURITY definer
 as
 $$
 declare
     date_of_creation timestamp without time zone;
     current_id Integer;
+    Sort_Code varchar(8);
+    cred_limit Money;
+    deb_id Integer;
+    cred_id Integer;
 begin
     date_of_creation := (select localtimestamp(0));
     current_id := (select "Customer_ID" from customer where username = "Customer_Username");
+    Sort_Code := '20-07-80';
+    cred_limit := '£500.00';
     if (requested_account_type = 'Debit') THEN
-        insert into debit_account("Customer_ID", "Account_Type", "Date_Created") values(current_id, requested_account_type, date_of_creation);
-    else if (requested_account_type = 'Credit') THEN
-        insert into credit_account("Customer_ID", "Date_Created") values(current_id, date_of_creation);
+        insert into debit_account("Date_Created", "Balance", "Sort_Code", "Overdraft") values(date_of_creation, '£0.00', Sort_Code, '£100.00');
+        deb_id := (select "Account_ID" from debit_account where "Date_Created" = date_of_creation);
+        insert into cards("Customer_ID", "Debit_ID","Card_Type") values(current_id, deb_id, 'Debit');
+    elsif (requested_account_type = 'Credit') THEN
+        insert into credit_account("Date_Created", "Credit_Limit", "Credit_Outstanding", "Payment_Interval_In_Days") values(date_of_creation, cred_limit , '£0.00' ,'30');
+        cred_id := (select "Account_ID" from credit_account where "Date_Created" = date_of_creation);
+        insert into cards("Customer_ID", "Credit_ID", "Card_Type") values(current_id, cred_id, 'Credit');
     end if;
 end;
 $$;
 
 create or replace procedure customer_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
-entry_contacts varchar(255))
+entry_contacts varchar(255), entry_password varchar(255))
 language plpgsql
+SECURITY definer
 as
 $$
 declare 
@@ -200,79 +290,165 @@ begin
        current_id := (select count(*) from customer) + 1;
     end if;
     username := (select(CONCAT((select left(entry_firstname, 1)), entry_lastname, current_id)));
-    insert into customer("Customer_Firstname", "Customer_Lastname", "Customer_Address", "Customer_Contacts", "Customer_Username", "Date_Joined") 
-    values(entry_firstname, entry_lastname, entry_address, entry_contacts, username, date_of_creation);
-    call customer_role_creation(username);
-    call account_application(username, 'Debit');
+    insert into customer("Customer_Firstname", "Customer_Lastname", "Customer_Address", "Customer_Contacts", "Customer_Username", "Date_Joined", "Customer_Password") 
+    values(entry_firstname, entry_lastname, entry_address, entry_contacts, username, date_of_creation, crypt(entry_password, gen_salt('bf')));
+    call customer_role_creation(username, entry_password);
+    call account_creation(username, 'Debit');
+    call account_creation(username, 'Credit');
+end;
+$$;
+
+create or replace procedure pay_off_loan(Loan_ID Integer, Money_Paid Money)
+language plpgsql
+SECURITY definer
+as
+$$
+declare
+date_of_creation timestamp without time zone;
+loan_amount Money;
+acc_id Int;
+acc_bal Money;
+begin
+      date_of_creation := (select localtimestamp(0));
+      loan_amount := (select "Loan_Amount" from loans where "Loan_ID" = Loan_ID);
+      acc_id := (select "Account_ID" from loans where "Loan_ID" = Loan_ID);
+      acc_bal := (select "Balance" from debit_account where "Account_ID" = acc_id);
+      if Money_Paid > acc_bal THEN
+          raise exception 'Amount attempted to input is greater than account balance';
+      elsif Money_Paid > loan_amount THEN
+          insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment") values (Loan_ID, loan_amount, date_of_creation);
+          update debit_account set "Balance" = "Balance" - loan_amount where "Account_ID" = acc_id;
+      else
+          insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment") values (Loan_ID, Money_Paid, date_of_creation);
+          update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
+      end if;
 end;
 $$;
 
 create or replace procedure apply_loans(Account_ID Integer, Loan_Amount Money)
 language plpgsql
+SECURITY definer
 as
 $$
 declare
 date_of_creation timestamp without time zone;
+card_id Integer;
 begin
       date_of_creation := (select localtimestamp(0));
-      if Account_ID not in (select "Account_ID" from accounts) THEN
+      card_id := (select "Card_ID" from cards where "Debit_ID" = Account_ID);
+      if Account_ID not in (select "Account_ID" from debit_account) THEN
           raise exception 'Account with ID % is not in database!', Account_ID;
-          return;
-      end if;
-      insert into loans("Account_ID", "Loan_Amount", "Date_Of_Request", "Loan_Status") values(Account_ID, Loan_Amount, date_of_creation, 'Pending');
-     
+      else
+          insert into loans("Card_ID", "Loan_Amount", "Date_Of_Request", "Loan_Status") values(card_id, Loan_Amount, date_of_creation, 'Pending');
+     end if;
 end;
 $$;
--- ASK PRINCE FOR LOAN ACCEPTANCE --
-create or replace procedure loan_acceptance()
+
+create or replace procedure requests_for_account(Card_ID Integer, Request Varchar(20), Alter_Value Money)
 language plpgsql
+SECURITY definer
+as
+$$
+declare
+card_type Varchar(8);
+date_of_creation timestamp without time zone;
+begin
+    date_of_creation := (select localtimestamp(0));
+    card_type := (select "Card_Type" from cards where "Card_ID" = card_type);
+    if card_type = 'Credit' THEN
+      if Request = 'Increase' then
+        insert into alter_request("Card_ID", "Account_Type", "Request_Type", "Altered_By", "Date_Of_Request", "Request_Status")
+        values(Card_ID, card_type, 'Credit Increase', Alter_Value, date_of_creation, 'Pending');
+      elsif Request = 'Decrease' then
+        insert into alter_request("Card_ID", "Account_Type", "Request_Type", "Altered_By", "Date_Of_Request", "Request_Status")
+        values(Card_ID, card_type, 'Credit Decrease', Alter_Value, date_of_creation, 'Pending');
+      end if;
+    elsif card_type = 'Debit' then
+      if Request = 'Increase' then
+        insert into alter_request("Card_ID", "Account_Type", "Request_Type", "Altered_By", "Date_Of_Request", "Request_Status")
+        values(Card_ID, card_type, 'Overdraft Increase', Alter_Value, date_of_creation, 'Pending');
+      elsif Request = 'Decrease' then
+        insert into alter_request("Card_ID", "Account_Type", "Request_Type", "Altered_By", "Date_Of_Request", "Request_Status")
+        values(Card_ID, card_type, 'Overdraft Decrease', Alter_Value, date_of_creation, 'Pending');
+      end if;
+    end if;
+end;
+$$;
+
+create or replace procedure payee_creation(customer_id Integer, payee_account_id Integer, payee_sort_code Varchar(8))
+language plpgsql
+SECURITY definer
 as
 $$
 declare
 begin
-    select * from loans where "Loan_Status" = 'Pending';
+    if payee_account_id not in (select "Payee_Account_ID" from payees where "Customer_ID" = customer_id) then
+        insert into payees("Customer_ID", "Payee_Account_ID", "Payee_Sort_Code") values(customer_id, payee_account_id, payee_sort_code);
+    end if;
 end;
 $$;
 
-
-create or replace procedure customer_balance_transfer(value1 Integer, value2 Integer, value3 Money)
+create or replace procedure customer_balance_transfer(payee_card_id Integer, payer_card_id Integer, value3 Money)
 language plpgsql
+SECURITY definer
 as
 $$
 declare 
+date_of_creation timestamp without time zone;
+current_id Integer;
+payee_id Integer;
+payer_card_type Varchar(10);
+payee_sort_code varchar(8);
 begin
-    update accounts
-    set "Account_Balance" = "Account_Balance" - value3
-    where "Account_ID" = value2;
-
-    update accounts
-    set "Account_Balance" = "Account_Balance" + value3
-    where "Account_ID" = value1;
-
-    commit;
+    date_of_creation := (select localtimestamp(0));
+    current_id := (select "Customer_ID" from customer where "Customer_Username" = (select current_user));
+    payer_card_type := (select "Card_Type" from cards where "Card_ID" = payer_card_id);
+    if payer_card_id = 'Debit' THEN
+        update debit_account
+        set "Balance" = "Balance" - value3
+        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payer_card_id));
+        update debit_account
+        set "Balance" = "Balance" + value3
+        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
+        commit;
+    elsif payer_card_id = 'Credit' THEN
+        update credit_account 
+        set "Credit_Outstanding" = "Credit_Outstanding" + value3 
+        where ("Account_ID" = (select "Credit_ID" from cards where "Card_ID" = payer_card_id));
+        update debit_account
+        set "Balance" = "Balance" + value3
+        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
+        commit;
+    end if;
+    payee_sort_code := (select "Sort_Code" from debit_account where "Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
+    call payee_creation(current_id, payee_card_id, payee_sort_code);
+    payee_id := (select "Payee_ID" from payees where ("Payee_Account_ID" = payee_card_id));
+    insert into transfer("Payee_ID", "Card_ID", "Amount_Sent", "Date_Sent") values(payee_id, payer_card_id, value3, date_of_creation);
 end;
 $$;
-
-
-create or replace procedure employee_role_creation(username varchar(255), entry_rank Integer)
+--------------------------
+--------------------------
+create or replace procedure employee_role_creation(username varchar(255), entry_rank Integer, password_ varchar(255))
 language plpgsql
+SECURITY definer
 as
 $$
 declare
 begin
-    if entry_rank = '1' THEN
-      execute 'create role "'||username||'"with login password ''1234'';
-      grant employee to "'||username||'"';
-    else if entry_rank = '2' THEN
-      execute 'create role "'||username||'"with login password ''1234'';
-      grant manager to "'||username||'"';
+    IF (entry_rank = '1') THEN
+        execute 'create role "'||username||'"with login password "'||password_||'";
+        grant employee to "'||username||'"';
+    elsif (entry_rank = '2') THEN
+        execute 'create role "'||username||'"with login password "'||password_||'";
+        grant manager to "'||username||'"';
     end if;
 end;
 $$;
 
 create or replace procedure employee_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
-entry_rank Integer)
+entry_rank Integer, entry_password varchar(255))
 language plpgsql
+SECURITY definer
 as
 $$
 declare 
@@ -287,8 +463,92 @@ begin
        current_id := (select count(*) from employee) + 1;
     end if;
     username := (select(CONCAT((select left(entry_firstname, 1)), entry_lastname, current_id, '@bank.com')));
-    insert into employee("Employee_Firstname", "Employee_Lastname", "Employee_Address", "Employee_Username", "Date_Joined", "Employee_Rank_ID") 
-    values(entry_firstname, entry_lastname, entry_address, username, date_of_creation, entry_rank);
-    call employee_role_creation(username, entry_rank);
+    insert into employee("Employee_Firstname", "Employee_Lastname", "Employee_Address", "Employee_Username", "Date_Joined", "Employee_Rank_ID", "Employee_Password") 
+    values(entry_firstname, entry_lastname, entry_address, username, date_of_creation, entry_rank, crypt(entry_password, gen_salt('bf')));
+    call employee_role_creation(username, entry_rank, entry_password);
 end;
 $$;
+
+create or replace procedure loan_acceptance(loan_id Integer, loan_status varchar(25))
+language plpgsql
+SECURITY definer
+as
+$$
+declare
+loan_amount Money;
+old_status varchar(25);
+account_id Int;
+begin
+    loan_amount := (select "Loan_Amount" from loans where "Loan_ID" = loan_id);
+    old_status := (select "Loan_Status" from loans where "Loan_ID" = loan_id);
+    if old_status = 'Pending' THEN
+        update loans set "Loan_Status" = loan_status where "Loan_ID" = loan_id;
+        if loan_status = 'Accepted' THEN
+            update debit_account set "Balance" = "Balance" + loan_amount 
+            where "Account_ID" = (select "Account_ID" from loans where "Loan_ID" = loan_id);
+        end if;
+    end if;
+end;
+$$;
+
+create or replace procedure request_acceptance(Request_ID Integer, New_Request_Status Varchar(20))
+language plpgsql
+SECURITY definer
+as
+$$
+declare
+request Varchar(20);
+account_id Integer;
+alter_amount Money;
+begin
+    alter_amount := (select "Altered_By" from alter_request where "Request_ID" = Request_ID);
+    request := (select "Request_Type" from alter_request where "Request_ID" = Request_ID);
+    if New_Request_Status = 'Accepted' THEN
+      update alter_request set "Request_Status" = 'Accepted' where "Request_ID" = Request_ID;
+      if request = 'Credit Increase' THEN
+          account_id := (select "Credit_ID" from cards where "Request_ID" = Request_ID);
+          update credit_account
+          set "Credit_Limit" = "Credit_Limit" + alter_amount
+          where "Account_ID" = account_id;
+          commit;
+      elsif request = 'Credit Decrease' THEN
+          account_id := (select "Credit_ID" from cards where "Request_ID" = Request_ID);
+          update credit_account
+          set "Credit_Limit" = "Credit_Limit" - alter_amount
+          where "Account_ID" = account_id;
+          commit;
+      elsif request = 'Overdraft Increase' THEN
+          account_id := (select "Debit_ID" from cards where "Request_ID" = Request_ID);
+          update debit_account
+          set "Overdraft" = "Overdraft" + alter_amount
+          where "Account_ID" = account_id;
+          commit;
+      elsif request = 'Overdraft Decrease' THEN
+          account_id := (select "Debit_ID" from cards where "Request_ID" = Request_ID);
+          update debit_account
+          set "Overdraft" = "Overdraft" - alter_amount
+          where "Account_ID" = account_id;
+          commit;
+      end if;
+    end if;
+end;
+$$;
+----------
+----------
+
+grant execute on procedure customer_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
+entry_contacts varchar(255)) to customer;
+
+grant execute on procedure account_creation(username varchar(255), requested_account_type varchar(255)) to customer;
+grant execute on procedure apply_loans(Account_ID Integer, Loan_Amount Money) to customer;
+grant execute on procedure customer_balance_transfer(payee Integer, payee_sort_code varchar(8), payer Integer, payer_sort_code varchar(8), value3 Money) to customer;
+grant execute on procedure pay_off_loan(Loan_ID Integer, Money_Paid Money) to customer;
+grant execute on procedure requests_for_account(Card_ID Integer, Request Varchar(20), Alter_Value Money) to customer;
+
+---------
+--------
+
+grant execute on procedure loan_acceptance(loan_id Integer, loan_status varchar(25)) to manager;
+grant execute on procedure employee_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
+entry_rank Integer) to manager;
+grant execute on procedure request_acceptance(Request_ID Integer, New_Request_Status Varchar(20)) to manager;
