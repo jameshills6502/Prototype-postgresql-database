@@ -27,7 +27,7 @@ CREATE TABLE "customer" (
 CREATE TABLE "credit_account" (
   "Account_ID" Serial,
   "Credit_Limit" Money,
-  "Credit_Outstanding" Money check ("Credit_Outstanding" <= "Credit_Limit"),
+  "Credit_Outstanding" Money, check ("Credit_Outstanding" <= "Credit_Limit"),
   "Date_Created" timestamp without time zone,
   "Payment_Interval_In_Days" Integer,
   PRIMARY KEY ("Account_ID")
@@ -130,6 +130,7 @@ CREATE TABLE "payments" (
   "Payment_ID" Serial,
   "Loan_ID" Integer,
   "Amount_Paid" Money,
+  "Amount_Left_To_Pay" Money,
   "Date_Of_Payment" timestamp without time zone,
   PRIMARY KEY ("Payment_ID"),
   CONSTRAINT "FK_payments.Loan_ID"
@@ -188,16 +189,17 @@ grant select on table alter_request to employee;
 grant select on table payments to employee;
 grant select on table employee to employee;
 
-grant select on table customer to manager;
-grant select on table debit_account to manager;
-grant select on table credit_account to manager;
-grant select on table loans to manager;
-grant select on table payees to manager;
-grant select on table cards to manager;
-grant select on table transfer to manager;
-grant select on table alter_request to manager;
-grant select on table payments to manager;
-grant select on table employee to manager;
+grant all on table customer to manager;
+grant all on table debit_account to manager;
+grant all on table credit_account to manager;
+grant all on table loans to manager;
+grant all on table payees to manager;
+grant all on table cards to manager;
+grant all on table transfer to manager;
+grant all on table alter_request to manager;
+grant all on table payments to manager;
+grant all on table employee to manager;
+grant all on table employee_rank to manager;
 
 
 alter table customer enable row level security;
@@ -216,17 +218,36 @@ alter table payments enable row level security;
 
 CREATE POLICY secure ON customer TO customer USING("Customer_Username" = (select current_user));
 CREATE POLICY secure ON cards TO customer USING((select "Customer_ID" from customer where ("Customer_Username" = (select current_user))) = "Customer_ID");
-CREATE POLICY secure ON credit_account TO customer USING("Account_ID" = (select "Credit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
-CREATE POLICY secure ON debit_account TO customer USING("Account_ID" = (select "Debit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
-CREATE POLICY secure on alter_request TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
+CREATE POLICY secure ON credit_account TO customer USING("Account_ID" = (select "Credit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user))) and "Card_Type" = 'Credit'));
+CREATE POLICY secure ON debit_account TO customer USING("Account_ID" = (select "Debit_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where "Customer_Username" = (select current_user)) and "Card_Type" = 'Debit'));
+CREATE POLICY secure on alter_request TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where "Customer_Username" = (select current_user))));
 CREATE POLICY secure on loans TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
 CREATE POLICY secure on transfer TO customer USING("Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user)))));
 CREATE POLICY secure on payees TO customer USING("Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user))));
 CREATE POLICY secure ON payments TO customer USING("Loan_ID" = (select "Loan_ID" from loans where "Card_ID" = (select "Card_ID" from cards where "Customer_ID" = (select "Customer_ID" from customer where ("Customer_Username" = (select current_user))))));
 
+CREATE POLICY secure_employee ON customer TO employee USING("Customer_Username" = "Customer_Username");
+CREATE POLICY secure_employee ON cards TO employee USING("Card_ID" = "Card_ID");
+CREATE POLICY secure_employee ON credit_account TO employee USING("Account_ID" = "Account_ID");
+CREATE POLICY secure_employee ON debit_account TO employee USING("Account_ID" = "Account_ID");
+CREATE POLICY secure_employee ON alter_request TO employee USING("Request_ID" = "Request_ID");
+CREATE POLICY secure_employee ON loans TO employee USING("Loan_ID" = "Loan_ID");
+CREATE POLICY secure_employee ON transfer TO employee USING("Transaction_ID" = "Transaction_ID");
+CREATE POLICY secure_employee ON payees TO employee USING("Payee_ID" = "Payee_ID");
+CREATE POLICY secure_employee ON payments TO employee USING("Payment_ID" = "Payment_ID");
+CREATE POLICY secure_employee ON employee TO employee USING("Employee_Username" = (select current_user));
 
-
-
+CREATE POLICY secure_manager ON customer TO manager USING("Customer_Username" = "Customer_Username");
+CREATE POLICY secure_manager ON cards TO manager USING("Card_ID" = "Card_ID");
+CREATE POLICY secure_manager ON credit_account TO manager USING("Account_ID" = "Account_ID");
+CREATE POLICY secure_manager ON debit_account TO manager USING("Account_ID" = "Account_ID");
+CREATE POLICY secure_manager ON alter_request TO manager USING("Request_ID" = "Request_ID");
+CREATE POLICY secure_manager ON loans TO manager USING("Loan_ID" = "Loan_ID");
+CREATE POLICY secure_manager ON transfer TO manager USING("Transaction_ID" = "Transaction_ID");
+CREATE POLICY secure_manager ON payees TO manager USING("Payee_ID" = "Payee_ID");
+CREATE POLICY secure_manager ON payments TO manager USING("Payment_ID" = "Payment_ID");
+CREATE POLICY secure_manager ON employee TO manager USING("Employee_ID" = "Employee_ID");
+CREATE POLICY secure_manager ON employee_rank TO manager USING("Employee_Rank_ID" = "Employee_Rank_ID");
 
 ------------------------------
 ------------------------------
@@ -238,7 +259,7 @@ as
 $$
 declare
 begin
-    execute 'create role "'||username||'" with login password "'||password_||'";
+    execute 'create role "'||username||'" with login password '''||password_||''';
     grant customer to "'||username||'"';
 end;
 $$;
@@ -262,11 +283,11 @@ begin
     cred_limit := '£500.00';
     if (requested_account_type = 'Debit') THEN
         insert into debit_account("Date_Created", "Balance", "Sort_Code", "Overdraft") values(date_of_creation, '£0.00', Sort_Code, '£100.00');
-        deb_id := (select "Account_ID" from debit_account where "Date_Created" = date_of_creation);
+        deb_id := (select count(*) from debit_account);
         insert into cards("Customer_ID", "Debit_ID","Card_Type") values(current_id, deb_id, 'Debit');
     elsif (requested_account_type = 'Credit') THEN
         insert into credit_account("Date_Created", "Credit_Limit", "Credit_Outstanding", "Payment_Interval_In_Days") values(date_of_creation, cred_limit , '£0.00' ,'30');
-        cred_id := (select "Account_ID" from credit_account where "Date_Created" = date_of_creation);
+        cred_id := (select count(*) from credit_account);
         insert into cards("Customer_ID", "Credit_ID", "Card_Type") values(current_id, cred_id, 'Credit');
     end if;
 end;
@@ -308,19 +329,33 @@ date_of_creation timestamp without time zone;
 loan_amount Money;
 acc_id Int;
 acc_bal Money;
+to_pay Money;
 begin
       date_of_creation := (select localtimestamp(0));
       loan_amount := (select "Loan_Amount" from loans where "Loan_ID" = Loan_ID);
-      acc_id := (select "Account_ID" from loans where "Loan_ID" = Loan_ID);
+      acc_id := (select "Account_ID" from debit_account where "Account_ID" = (select "Debit_ID" from cards where "Card_ID" = (select "Card_ID" from loans where "Loan_ID" = Loan_ID)));
       acc_bal := (select "Balance" from debit_account where "Account_ID" = acc_id);
-      if Money_Paid > acc_bal THEN
-          raise exception 'Amount attempted to input is greater than account balance';
-      elsif Money_Paid > loan_amount THEN
-          insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment") values (Loan_ID, loan_amount, date_of_creation);
-          update debit_account set "Balance" = "Balance" - loan_amount where "Account_ID" = acc_id;
-      else
-          insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment") values (Loan_ID, Money_Paid, date_of_creation);
-          update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
+      if Loan_ID not in (select "Loan_ID" from payments) then
+          if Money_Paid > acc_bal THEN
+              raise exception 'Amount attempted to input is greater than account balance';
+          elsif Money_Paid > loan_amount THEN
+              insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, loan_amount, date_of_creation, '£0');
+              update debit_account set "Balance" = "Balance" - loan_amount where "Account_ID" = acc_id;
+          else
+              to_pay := loan_amount - Money_Paid;
+              insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, Money_Paid, date_of_creation, to_pay);
+              update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
+          end if;
+      elsif Loan_ID in (select "Loan_ID" from payments) then
+          to_pay := (select "Amount_Left_To_Pay" from payments where "Loan_ID" = Loan_ID and "Payment_ID" = (select max("Payment_ID") from payments where "Loan_ID" = Loan_ID));
+          if Money_Paid > to_pay then
+              insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, loan_amount, date_of_creation, '£0');
+              update debit_account set "Balance" = "Balance" - to_pay where "Account_ID" = acc_id;
+          elsif to_pay > Money_Paid then
+              to_pay := to_pay - Money_Paid;
+              insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, Money_Paid, date_of_creation, to_pay);
+              update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
+          end if;
       end if;
 end;
 $$;
@@ -354,7 +389,7 @@ card_type Varchar(8);
 date_of_creation timestamp without time zone;
 begin
     date_of_creation := (select localtimestamp(0));
-    card_type := (select "Card_Type" from cards where "Card_ID" = card_type);
+    card_type := (select "Card_Type" from cards where "Card_ID" = Card_ID);
     if card_type = 'Credit' THEN
       if Request = 'Increase' then
         insert into alter_request("Card_ID", "Account_Type", "Request_Type", "Altered_By", "Date_Of_Request", "Request_Status")
@@ -398,30 +433,40 @@ date_of_creation timestamp without time zone;
 current_id Integer;
 payee_id Integer;
 payer_card_type Varchar(10);
+payee_card_type Varchar(10);
 payee_sort_code varchar(8);
+payer_account_id Integer;
+payee_account_id Integer;
 begin
     date_of_creation := (select localtimestamp(0));
     current_id := (select "Customer_ID" from customer where "Customer_Username" = (select current_user));
     payer_card_type := (select "Card_Type" from cards where "Card_ID" = payer_card_id);
-    if payer_card_id = 'Debit' THEN
-        update debit_account
-        set "Balance" = "Balance" - value3
-        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payer_card_id));
-        update debit_account
-        set "Balance" = "Balance" + value3
-        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
-        commit;
-    elsif payer_card_id = 'Credit' THEN
-        update credit_account 
-        set "Credit_Outstanding" = "Credit_Outstanding" + value3 
-        where ("Account_ID" = (select "Credit_ID" from cards where "Card_ID" = payer_card_id));
-        update debit_account
-        set "Balance" = "Balance" + value3
-        where ("Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
-        commit;
-    end if;
-    payee_sort_code := (select "Sort_Code" from debit_account where "Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id));
-    call payee_creation(current_id, payee_card_id, payee_sort_code);
+    payee_card_type := (select "Card_Type" from cards where "Card_ID" = payee_card_id);
+        if (payer_card_type = 'Debit' and payee_card_type = 'Debit') THEN
+            payee_account_id := (select "Debit_ID" from cards where "Card_ID" = payee_card_id);
+            payer_account_id := (select "Debit_ID" from cards where "Card_ID" = payer_card_id);
+            update debit_account
+            set "Balance" = "Balance" - value3
+            where ("Account_ID" = payee_account_id);
+            update debit_account
+            set "Balance" = "Balance" + value3
+            where ("Account_ID" = payer_account_id);
+            payee_sort_code := (select "Sort_Code" from debit_account where "Account_ID" = (select "Debit_ID" from cards where "Card_ID" = payee_card_id and "Card_Type" = 'Debit'));
+            call payee_creation(current_id, payee_card_id, payee_sort_code);
+        elsif (payer_card_type = 'Credit' and payee_card_type = 'Debit') THEN
+            payee_account_id := (select "Debit_ID" from cards where "Card_ID" = payee_card_id);
+            payer_account_id := (select "Credit_ID" from cards where "Card_ID" = payer_card_id);
+            update credit_account 
+            set "Credit_Outstanding" = "Credit_Outstanding" + value3 
+            where ("Account_ID" = payer_account_id);
+            update debit_account
+            set "Balance" = "Balance" + value3
+            where ("Account_ID" = payee_account_id);
+            payee_sort_code := 'N/A';
+            call payee_creation(current_id, payee_card_id, payee_sort_code);
+        else
+            raise exception 'Transfer to credit is not allowed!';
+        end if;
     payee_id := (select "Payee_ID" from payees where ("Payee_Account_ID" = payee_card_id));
     insert into transfer("Payee_ID", "Card_ID", "Amount_Sent", "Date_Sent") values(payee_id, payer_card_id, value3, date_of_creation);
 end;
@@ -506,29 +551,25 @@ begin
     if New_Request_Status = 'Accepted' THEN
       update alter_request set "Request_Status" = 'Accepted' where "Request_ID" = Request_ID;
       if request = 'Credit Increase' THEN
-          account_id := (select "Credit_ID" from cards where "Request_ID" = Request_ID);
+          account_id := (select "Credit_ID" from cards where "Card_ID" = (select "Card_ID" from alter_request where "Request_ID" = Request_ID));
           update credit_account
           set "Credit_Limit" = "Credit_Limit" + alter_amount
           where "Account_ID" = account_id;
-          commit;
       elsif request = 'Credit Decrease' THEN
-          account_id := (select "Credit_ID" from cards where "Request_ID" = Request_ID);
+          account_id := (select "Credit_ID" from cards where "Card_ID" = (select "Card_ID" from alter_request where "Request_ID" = Request_ID));
           update credit_account
           set "Credit_Limit" = "Credit_Limit" - alter_amount
           where "Account_ID" = account_id;
-          commit;
       elsif request = 'Overdraft Increase' THEN
-          account_id := (select "Debit_ID" from cards where "Request_ID" = Request_ID);
+          account_id := (select "Debit_ID" from cards where "Card_ID" = (select "Card_ID" from alter_request where "Request_ID" = Request_ID));
           update debit_account
           set "Overdraft" = "Overdraft" + alter_amount
           where "Account_ID" = account_id;
-          commit;
       elsif request = 'Overdraft Decrease' THEN
-          account_id := (select "Debit_ID" from cards where "Request_ID" = Request_ID);
+          account_id := (select "Debit_ID" from cards where "Card_ID" = (select "Card_ID" from alter_request where "Request_ID" = Request_ID));
           update debit_account
           set "Overdraft" = "Overdraft" - alter_amount
           where "Account_ID" = account_id;
-          commit;
       end if;
     end if;
 end;
@@ -537,11 +578,11 @@ $$;
 ----------
 
 grant execute on procedure customer_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
-entry_contacts varchar(255)) to customer;
+entry_contacts varchar(255), entry_password varchar(255)) to customer;
 
 grant execute on procedure account_creation(username varchar(255), requested_account_type varchar(255)) to customer;
 grant execute on procedure apply_loans(Account_ID Integer, Loan_Amount Money) to customer;
-grant execute on procedure customer_balance_transfer(payee Integer, payee_sort_code varchar(8), payer Integer, payer_sort_code varchar(8), value3 Money) to customer;
+grant execute on procedure customer_balance_transfer(payee_card_id Integer, payer_card_id Integer, value3 Money) to customer;
 grant execute on procedure pay_off_loan(Loan_ID Integer, Money_Paid Money) to customer;
 grant execute on procedure requests_for_account(Card_ID Integer, Request Varchar(20), Alter_Value Money) to customer;
 
@@ -550,5 +591,5 @@ grant execute on procedure requests_for_account(Card_ID Integer, Request Varchar
 
 grant execute on procedure loan_acceptance(loan_id Integer, loan_status varchar(25)) to manager;
 grant execute on procedure employee_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
-entry_rank Integer) to manager;
+entry_rank Integer, entry_password varchar(255)) to manager;
 grant execute on procedure request_acceptance(Request_ID Integer, New_Request_Status Varchar(20)) to manager;
