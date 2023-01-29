@@ -1,0 +1,12 @@
+#!/bin/bash
+
+
+psql -c 'create database "IM_CW1_2141560"' -c '\c "IM_CW1_2141560"' -c '\i IMCW1_CREATION.sql;' -c "call employee_creation('Anita', 'Khatka_E', 'Address', '1', '1234')" -c "call employee_creation('Anita', 'Khatka_M', 'Address', '2', '1234')" -c "call customer_creation('Anita', 'Khatka', 'Contacts', 'Address', '1234');"
+
+psql -h localhost -d "IM_CW1_2141560" -U AKhatka1 -c 'select * from customer;' -c 'select * from debit_account;' -c 'select * from credit_account;' -c "call customer_balance_transfer('1', '2', '£500');" -c "call requests_for_account('2', 'Increase', '£500');" -c "call apply_loans('1', '£500');"
+
+psql -h localhost -d "IM_CW1_2141560" -U AKhatka_M2@bank.com -c "call loan_acceptance('1', 'Accepted')" -c "call request_acceptance('1', 'Accepted')"
+psql -h localhost -d "IM_CW1_2141560" -U AKhatka_E1@bank.com -c 'select * from transfer; select * from debit_account'
+psql -h localhost -d "IM_CW1_2141560" -U AKhatka1 -c "call pay_off_loan('1', '£500');" -c 'select * from payments;' 
+
+

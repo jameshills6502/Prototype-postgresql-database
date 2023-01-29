@@ -165,7 +165,6 @@ insert into employee_rank("Rank_Name", "Rank_Description", "Rank_Privileges") va
 
 
 create role manager;
-grant connect on database imcw to manager;
 create role employee;
 create role customer;
 grant select on table customer to customer;
@@ -312,7 +311,7 @@ begin
     end if;
     username := (select(CONCAT((select left(entry_firstname, 1)), entry_lastname, current_id)));
     insert into customer("Customer_Firstname", "Customer_Lastname", "Customer_Address", "Customer_Contacts", "Customer_Username", "Date_Joined", "Customer_Password") 
-    values(entry_firstname, entry_lastname, entry_address, entry_contacts, username, date_of_creation, crypt(entry_password, gen_salt('bf')));
+    values(entry_firstname, entry_lastname, entry_address, entry_contacts, username, date_of_creation, entry_password);
     call customer_role_creation(username, entry_password);
     call account_creation(username, 'Debit');
     call account_creation(username, 'Credit');
@@ -352,6 +351,10 @@ begin
               insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, loan_amount, date_of_creation, '£0');
               update debit_account set "Balance" = "Balance" - to_pay where "Account_ID" = acc_id;
           elsif to_pay > Money_Paid then
+              to_pay := to_pay - Money_Paid;
+              insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, Money_Paid, date_of_creation, to_pay);
+              update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
+          else
               to_pay := to_pay - Money_Paid;
               insert into payments("Loan_ID", "Amount_Paid", "Date_Of_Payment", "Amount_Left_To_Pay") values (Loan_ID, Money_Paid, date_of_creation, to_pay);
               update debit_account set "Balance" = "Balance" - Money_Paid where "Account_ID" = acc_id;
@@ -481,10 +484,10 @@ $$
 declare
 begin
     IF (entry_rank = '1') THEN
-        execute 'create role "'||username||'"with login password "'||password_||'";
+        execute 'create role "'||username||'"with login password '''||password_||''';
         grant employee to "'||username||'"';
     elsif (entry_rank = '2') THEN
-        execute 'create role "'||username||'"with login password "'||password_||'";
+        execute 'create role "'||username||'"with login password '''||password_||''';
         grant manager to "'||username||'"';
     end if;
 end;
@@ -509,7 +512,7 @@ begin
     end if;
     username := (select(CONCAT((select left(entry_firstname, 1)), entry_lastname, current_id, '@bank.com')));
     insert into employee("Employee_Firstname", "Employee_Lastname", "Employee_Address", "Employee_Username", "Date_Joined", "Employee_Rank_ID", "Employee_Password") 
-    values(entry_firstname, entry_lastname, entry_address, username, date_of_creation, entry_rank, crypt(entry_password, gen_salt('bf')));
+    values(entry_firstname, entry_lastname, entry_address, username, date_of_creation, entry_rank, entry_password);
     call employee_role_creation(username, entry_rank, entry_password);
 end;
 $$;
@@ -530,7 +533,8 @@ begin
         update loans set "Loan_Status" = loan_status where "Loan_ID" = loan_id;
         if loan_status = 'Accepted' THEN
             update debit_account set "Balance" = "Balance" + loan_amount 
-            where "Account_ID" = (select "Account_ID" from loans where "Loan_ID" = loan_id);
+            where "Account_ID" = (select "Debit_ID" from cards where "Card_ID" = (select "Card_ID" from loans where "Loan_ID" = loan_id));
+            update loans set "Employee_ID" = (select current_user) where "Loan_ID" = loan_id;
         end if;
     end if;
 end;
@@ -550,6 +554,7 @@ begin
     request := (select "Request_Type" from alter_request where "Request_ID" = Request_ID);
     if New_Request_Status = 'Accepted' THEN
       update alter_request set "Request_Status" = 'Accepted' where "Request_ID" = Request_ID;
+      update alter_request set "Approved_by_employee" = (select current_user) where "Request_ID" = Request_ID;
       if request = 'Credit Increase' THEN
           account_id := (select "Credit_ID" from cards where "Card_ID" = (select "Card_ID" from alter_request where "Request_ID" = Request_ID));
           update credit_account
@@ -579,7 +584,6 @@ $$;
 
 grant execute on procedure customer_creation(entry_firstname varchar(255), entry_lastname varchar(255), entry_address varchar(255), 
 entry_contacts varchar(255), entry_password varchar(255)) to customer;
-
 grant execute on procedure account_creation(username varchar(255), requested_account_type varchar(255)) to customer;
 grant execute on procedure apply_loans(Account_ID Integer, Loan_Amount Money) to customer;
 grant execute on procedure customer_balance_transfer(payee_card_id Integer, payer_card_id Integer, value3 Money) to customer;
